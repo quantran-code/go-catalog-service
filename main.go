@@ -20,11 +20,15 @@ func main() {
 
 // NewRouter wires the catalog API.
 func NewRouter() http.Handler {
+	books := newBookStore()
+
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(RequestIDMiddleware())
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+	e.GET("/books/:id", books.getBook)
+	e.POST("/books/:id/borrow", books.borrowBook)
 	return e
 }
