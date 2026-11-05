@@ -29,6 +29,14 @@ func borrow(t *testing.T, router http.Handler, path string) *httptest.ResponseRe
 	return rec
 }
 
+func postReturn(t *testing.T, router http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+	return rec
+}
+
 func TestGetBookReturnsTheBook(t *testing.T) {
 	code, book := getBook(t, NewRouter(), "/books/1")
 
@@ -175,5 +183,140 @@ func TestConcurrentBorrowsOnlyOneSucceeds(t *testing.T) {
 	}
 	if conflict != borrowers-1 {
 		t.Fatalf("%d borrows conflicted, want %d", conflict, borrowers-1)
+	}
+}
+
+func TestReturnBookMarksItAvailable(t *testing.T) {
+	router := NewRouter()
+
+	if rec := borrow(t, router, "/books/1/borrow"); rec.Code != http.StatusOK {
+		t.Fatalf("borrow status %d, want 200", rec.Code)
+	}
+
+	rec := postReturn(t, router, "/books/1/return")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("return status %d, want 200", rec.Code)
+	}
+	var returned Book
+	if err := json.Unmarshal(rec.Body.Bytes(), &returned); err != nil {
+		t.Fatalf("decoding return body %q: %v", rec.Body.String(), err)
+	}
+	if returned.Status != BookStatusAvailable {
+		t.Fatalf("return response status = %q, want %q", returned.Status, BookStatusAvailable)
+	}
+
+	code, book := getBook(t, router, "/books/1")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if book.Status != BookStatusAvailable {
+		t.Fatalf("status after return = %q, want %q", book.Status, BookStatusAvailable)
+	}
+}
+
+func TestReturnAvailableBookReturns409(t *testing.T) {
+	router := NewRouter()
+
+	rec := postReturn(t, router, "/books/1/return")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409", rec.Code)
+	}
+	var body errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+	}
+	if body.Error != "book not on loan" {
+		t.Fatalf(`error = %q, want "book not on loan"`, body.Error)
+	}
+
+	// The failed return leaves the book available.
+	if code, book := getBook(t, router, "/books/1"); code != http.StatusOK || book.Status != BookStatusAvailable {
+		t.Fatalf("GET /books/1 = %d %q, want 200 %q", code, book.Status, BookStatusAvailable)
+	}
+}
+
+func TestReturnUnknownBookReturns404(t *testing.T) {
+	for _, path := range []string{"/books/999/return", "/books/abc/return"} {
+		t.Run(path, func(t *testing.T) {
+			rec := postReturn(t, NewRouter(), path)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status %d, want 404", rec.Code)
+			}
+			var body errorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+			}
+			if body.Error != "book not found" {
+				t.Fatalf(`error = %q, want "book not found"`, body.Error)
+			}
+		})
+	}
+}
+
+func TestBorrowAfterReturnSucceeds(t *testing.T) {
+	router := NewRouter()
+
+	if rec := borrow(t, router, "/books/1/borrow"); rec.Code != http.StatusOK {
+		t.Fatalf("first borrow status %d, want 200", rec.Code)
+	}
+	if rec := postReturn(t, router, "/books/1/return"); rec.Code != http.StatusOK {
+		t.Fatalf("return status %d, want 200", rec.Code)
+	}
+
+	rec := borrow(t, router, "/books/1/borrow")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("borrow after return status %d, want 200", rec.Code)
+	}
+	var borrowed Book
+	if err := json.Unmarshal(rec.Body.Bytes(), &borrowed); err != nil {
+		t.Fatalf("decoding borrow body %q: %v", rec.Body.String(), err)
+	}
+	if borrowed.Status != BookStatusOnLoan {
+		t.Fatalf("borrow response status = %q, want %q", borrowed.Status, BookStatusOnLoan)
+	}
+}
+
+func TestConcurrentReturnsOnlyOneSucceeds(t *testing.T) {
+	router := NewRouter()
+
+	if rec := borrow(t, router, "/books/1/borrow"); rec.Code != http.StatusOK {
+		t.Fatalf("borrow status %d, want 200", rec.Code)
+	}
+
+	const returners = 20
+	codes := make([]int, returners)
+	var wg sync.WaitGroup
+	for i := 0; i < returners; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/books/1/return", nil))
+			codes[i] = rec.Code
+		}(i)
+	}
+	wg.Wait()
+
+	ok, conflict := 0, 0
+	for _, code := range codes {
+		switch code {
+		case http.StatusOK:
+			ok++
+		case http.StatusConflict:
+			conflict++
+		default:
+			t.Fatalf("unexpected status %d", code)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("%d returns succeeded, want exactly 1", ok)
+	}
+	if conflict != returners-1 {
+		t.Fatalf("%d returns conflicted, want %d", conflict, returners-1)
+	}
+
+	if code, book := getBook(t, router, "/books/1"); code != http.StatusOK || book.Status != BookStatusAvailable {
+		t.Fatalf("GET /books/1 = %d %q, want 200 %q", code, book.Status, BookStatusAvailable)
 	}
 }

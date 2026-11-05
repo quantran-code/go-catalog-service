@@ -30,5 +30,6 @@ func NewRouter() http.Handler {
 	})
 	e.GET("/books/:id", books.getBook)
 	e.POST("/books/:id/borrow", books.borrowBook)
+	e.POST("/books/:id/return", books.returnBook)
 	return e
 }

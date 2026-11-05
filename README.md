@@ -11,9 +11,10 @@ PORT=8082 go run .
 | `GET /health` | `{"status":"ok"}` when the process is up |
 | `GET /books/{id}` | The book as `{"id","title","author","status"}`, where `status` is `available` or `on_loan`; 404 `{"error":"book not found"}` when the id is unknown |
 | `POST /books/{id}/borrow` | Marks the book `on_loan` and returns it; 404 `{"error":"book not found"}` when the id is unknown, 409 `{"error":"book already on loan"}` when it is already out |
+| `POST /books/{id}/return` | Marks the book `available` and returns it; 404 `{"error":"book not found"}` when the id is unknown, 409 `{"error":"book not on loan"}` when it is already on the shelf |
 
-The shelf is seeded in code with three available books. Returning a book is not
-implemented yet, so a borrowed book stays `on_loan` for the life of the process.
+The shelf is seeded in code with three available books. Borrowing sets a book
+`on_loan` and returning it puts it back to `available`.
 
 ## Request correlation
 

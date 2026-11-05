@@ -33,6 +33,8 @@ var (
 	errBookNotFound = errors.New("book not found")
 	// errBookOnLoan is returned when a borrow finds the book already out.
 	errBookOnLoan = errors.New("book already on loan")
+	// errBookNotOnLoan is returned when a return finds the book already on the shelf.
+	errBookNotOnLoan = errors.New("book not on loan")
 )
 
 // errorResponse is the body shape every non-2xx response uses.
@@ -85,6 +87,24 @@ func (s *bookStore) borrow(id int64) (Book, error) {
 	return book, nil
 }
 
+// markReturned checks the book's status and flips it back to BookStatusAvailable
+// inside one critical section, so two concurrent returns cannot both pass the check.
+func (s *bookStore) markReturned(id int64) (Book, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	book, ok := s.books[id]
+	if !ok {
+		return Book{}, errBookNotFound
+	}
+	if book.Status == BookStatusAvailable {
+		return Book{}, errBookNotOnLoan
+	}
+	book.Status = BookStatusAvailable
+	s.books[id] = book
+	return book, nil
+}
+
 // getBook serves GET /books/:id. A non-numeric id is treated as a book that does
 // not exist rather than as a malformed request.
 func (s *bookStore) getBook(c echo.Context) error {
@@ -113,6 +133,25 @@ func (s *bookStore) borrowBook(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, errorResponse{Error: errBookNotFound.Error()})
 	case errors.Is(err, errBookOnLoan):
 		return c.JSON(http.StatusConflict, errorResponse{Error: errBookOnLoan.Error()})
+	case err != nil:
+		return c.JSON(http.StatusInternalServerError, errorResponse{Error: err.Error()})
+	}
+	return c.JSON(http.StatusOK, book)
+}
+
+// returnBook serves POST /books/:id/return.
+func (s *bookStore) returnBook(c echo.Context) error {
+	id, err := parseBookID(c)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, errorResponse{Error: errBookNotFound.Error()})
+	}
+
+	book, err := s.markReturned(id)
+	switch {
+	case errors.Is(err, errBookNotFound):
+		return c.JSON(http.StatusNotFound, errorResponse{Error: errBookNotFound.Error()})
+	case errors.Is(err, errBookNotOnLoan):
+		return c.JSON(http.StatusConflict, errorResponse{Error: errBookNotOnLoan.Error()})
 	case err != nil:
 		return c.JSON(http.StatusInternalServerError, errorResponse{Error: err.Error()})
 	}
